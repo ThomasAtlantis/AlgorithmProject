@@ -3,8 +3,6 @@ import numpy as np
 import copy
 import sys
 
-INFINITY = float("inf")
-
 class Task:
 
     def __init__(self, task_name, exec_time):
@@ -77,12 +75,13 @@ class Resource:
                 self.databases.append(database.strip())
                 self.datalocat.append(self.dcID(dataloct.strip()))
         
-        self.bandwidths = [[INFINITY for i in range(len(self.datacenters))] for i in range(len(self.datacenters))]
+        self.bandwidths = [[0 for i in range(len(self.datacenters))] for i in range(len(self.datacenters))]
         with open("bandwidth.dat", "r") as reader:
             for line in reader.readlines():
                 dc_1, dc_2, bandwidth = line.strip().split()
                 dc_1, dc_2, bandwidth = self.dcID(dc_1.strip()), self.dcID(dc_2.strip()), float(bandwidth.strip())
-                self.bandwidths[dc_1][dc_2] = bandwidth
+                # self.bandwidths[dc_1][dc_2] = bandwidth
+                self.bandwidths[dc_2][dc_1] = bandwidth
 
     def dcID(self, datacenter):
         return self.datacenters.index(datacenter)
@@ -203,7 +202,8 @@ class TaskScheduler:
     def printAssign(self, k, i, j):
         print("assign job {}'s task {} to datacenter {}".format(
             self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].job_name,
-            self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].tasks[i].task_name, j
+            self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].tasks[i].task_name,
+            self.dag_scheduler.resource.datacenters[j]
         ))
 
     def schedule(self):
@@ -221,10 +221,15 @@ class TaskScheduler:
         M = J * sum([len(self.schedule_pool[i].tasks) for i in self.stages_launch])
         C = lambda k, i, j: max([
             demand / self.dag_scheduler.resource.bandwidths[self.dag_scheduler.resource.datalocat[database]][j] 
-            for database, demand in self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].dataneed[i]
+            if self.dag_scheduler.resource.bandwidths[self.dag_scheduler.resource.datalocat[database]][j] > 0 else 1e12
+            for database, demand in self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].dataneed[i] 
         ])
         E = lambda k, i, j: self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].tasks[i].exec_time
-        A = lambda k, i, j: M ** (C(k, i, j) + E(k, i, j)) - 1
+        def A(k, i, j): 
+            try: 
+                return M ** (C(k, i, j) + E(k, i, j)) - 1 
+            except OverflowError as e: 
+                return 1e12
         range_k = len(self.stages_launch)
         range_i = lambda k: len(self.schedule_pool[self.stages_launch[k]].tasks)
         range_j = len(self.dag_scheduler.resource.datacenters)
