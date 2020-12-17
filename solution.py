@@ -95,15 +95,13 @@ class Resource:
             for line in reader.readlines():
                 dc_1, dc_2, bandwidth = line.strip().split()
                 dc_1, dc_2, bandwidth = self.dcID(dc_1.strip()), self.dcID(dc_2.strip()), float(bandwidth.strip())
-                self.bandwidths[dc_1][dc_2] = 1 / bandwidth
+                self.bandwidths[dc_1][dc_2] = 1000 / bandwidth
         self.bandwidths_sav = copy.deepcopy(self.bandwidths)
         self.extendLink()
         for i in range(len(self.datacenters)):
             for j in range(len(self.datacenters)):
                 self.buildPath(i, j, self.path[i][j])
                 self.path[i][j] = self.path[i][j][:-1]
-
-        self.showPath(0, 4)
     
     def extendLink(self):
         for k in range(len(self.datacenters)):
@@ -119,17 +117,28 @@ class Resource:
             path += [(self.path[i][j][k], self.path[i][j][k + 1]) for k in range(len(self.path[i][j]) - 1)]
         else:
             path = [(i, j)]
+        sentences = []
+        for u in range(len(self.datacenters)):
+            for v in range(len(self.datacenters)):
+                bandwidth = int(1000 / self.bandwidths_sav[u][v])
+                if bandwidth > 0 and u != v:
+                    color = "red" if (u, v) in path else "black"
+                    sentences.append(f'{self.datacenters[u]} -> {self.datacenters[v]} [label="{bandwidth}", color="{color}"]\n')
         with open("raw_links.dot", "w") as writer:
-            sentences = []
-            for i in range(len(self.datacenters)):
-                for j in range(len(self.datacenters)):
-                    bandwidth = int(1 / self.bandwidths_sav[i][j])
-                    if 0 < bandwidth < 1000:
-                        color = "red" if (i, j) in path else "black"
-                        sentences.append(f'{self.datacenters[i]} -> {self.datacenters[j]} [label="{bandwidth}", color="{color}"]\n')
             writer.write("digraph G {{{}}}\n".format("".join(sentences)))
         os.system("dot raw_links.dot -T png -o pic.png")
         subprocess.call(["open", "pic.png"])
+        sentences = []
+        for u in range(len(self.datacenters)):
+            for v in range(len(self.datacenters)):
+                bandwidth = float(1000 / self.bandwidths[u][v])
+                if bandwidth > 0 and u != v:
+                    color = "red" if (i, j) == (u, v) else "black"
+                    sentences.append(f'{self.datacenters[u]} -> {self.datacenters[v]} [label="{bandwidth:.1f}", color="{color}"]\n')
+        with open("raw_links.dot", "w") as writer:
+            writer.write("digraph G {{{}}}\n".format("".join(sentences)))
+        os.system("dot raw_links.dot -T png -o pic_2.png")
+        subprocess.call(["open", "pic_2.png"])
     
     def buildPath(self, i, j, path):
         if i == j:
@@ -218,7 +227,7 @@ class DAGScheduler:
         return self.jobs_stages[job_ID][stage_ID]
 
 
-    def print(self):
+    def showTasks(self):
         for job in self.jobs:
             print(job.job_name)
             for i in range(len(job.tasks)):
@@ -234,6 +243,7 @@ class TaskScheduler:
         self.task_pool = self.initialPool()
         self.to_launch = []
         self.time_point = 0
+        self.finish_time = []
 
     def initialPool(self):
         return [stages[0] for stages in self.dags.jobs_stages]
@@ -245,7 +255,11 @@ class TaskScheduler:
         for stage in self.task_pool:
             if stage.finish:
                 stage_next = self.dags.getStage(stage.job_ID, stage.stage_ID + 1)
-                if stage_next: new_pool.append(stage_next)
+                if stage_next: 
+                    new_pool.append(stage_next)
+                else:
+                    print(f"Job {self.dags.jobs[stage.job_ID].job_name} done at {self.time_point:.2f}s")
+                    self.finish_time.append(self.time_point)
             else:
                 stage.wait += 1
                 new_pool.append(stage)
@@ -257,15 +271,20 @@ class TaskScheduler:
     def jobOfStage(self, k):
         return self.dags.jobs[self.task_pool[k].job_ID]
 
-    def printAssign(self, k, i, j):
-        print("assign job {}'s task {} to datacenter {}".format(
+    def showAssign(self, k, i, j):
+        # print("assign job {}'s task {} to datacenter {}".format(
+        #     self.jobOfStage(k).job_name,
+        #     self.jobOfStage(k).tasks[i].task_name,
+        #     self.resource.datacenters[j]
+        # ))
+        print("({}, {}, {})".format(
             self.jobOfStage(k).job_name,
             self.jobOfStage(k).tasks[i].task_name,
             self.resource.datacenters[j]
         ))
 
     def schedule(self):
-        print(f"Start Scheduling at {self.time_point}s")
+        print(f"Start Scheduling at {self.time_point:.2f}s")
 
         task_total, slot_total = 0, sum(self.resource.processors)
         for i in range(len(self.task_pool)):
@@ -273,17 +292,22 @@ class TaskScheduler:
             self.to_launch.append(i)
             task_total += len(self.task_pool[i].tasks)
 
+        # for k in self.to_launch:
+        #     print("{}-{}: {}".format(
+        #         self.jobOfStage(k).job_name,
+        #         self.task_pool[k].stage_ID,
+        #         ', '.join([self.jobOfStage(k).tasks[task_ID].task_name for task_ID in self.task_pool[k].tasks])
+        #     ))
+
         J, K = len(self.resource.datacenters), len(self.to_launch)
         n = lambda k: len(self.task_pool[self.to_launch[k]].tasks)
         M = J * sum([n(k) for k in range(K)])
         C = lambda k, i, j: max([
-            demand * self.resource.bandwidths[self.resource.datalocat[database]][j] 
+            demand * self.resource.bandwidths[self.resource.datalocat[database]][j] / 1000
             for database, demand in self.jobOfStage(k).dataneed[i] 
         ])
         E = lambda k, i, j: self.jobOfStage(k).tasks[i].exec_time
         A = lambda k, i, j: M ** (C(k, i, j) + E(k, i, j)) - 1 
-
-        time_delta = 0
 
         function = [[[A(k, i, j) for j in range(J)] for i in range(n(k))] for k in range(K)]
         upperbound_l = [[[[int(j ==_j) for j in range(J)] for i in range(n(k))] for k in range(K)] for _j in range(J)]
@@ -295,6 +319,8 @@ class TaskScheduler:
         _flatten = lambda x: [y for _x in x for y in _flatten(_x)] if isinstance(x, list) else [x]
         _flatten_= lambda x: [_flatten(y) for y in x]
         
+        band_allocate = {}
+
         for _ in range(task_total):
             res = opt.linprog(
                 c=np.array(_flatten(function)), 
@@ -314,7 +340,7 @@ class TaskScheduler:
                         if x > _x: _x, _k, _i, _j = x, k, i, j
                         index += 1
             
-            self.printAssign(_k, _i, _j)
+            # self.showAssign(_k, _i, _j)
             
             A_k_i_j = A(_k, _i, _j)
             function[_k] = [[A_k_i_j for j in range(J)]for i in range(n(_k))]
@@ -328,15 +354,49 @@ class TaskScheduler:
             equality_r[index_1] = 0
             
             bounds[_k][_i] = [(0, 0) for j in range(J)]
-            
-            time_delta = max(time_delta, _x)
+
+            for db_ID, demand in self.jobOfStage(_k).dataneed[_i]:
+                dc_ID = self.resource.datalocat[db_ID]
+                _path = self.resource.path[dc_ID][_j]
+                if _path:
+                    path = [(dc_ID, _path[0]), (_path[-1], _j)]
+                    path += [(_path[p], _path[p + 1]) for p in range(len(_path) - 1)]
+                else:
+                    path = [(dc_ID, _j)]
+                for p in path:
+                    if p in band_allocate:
+                        band_allocate[p].append((_k, _i, demand))
+                    else:
+                        band_allocate[p] = [(_k, _i, demand)]
+
+        task_time = {}
+        for u, v in band_allocate.keys():
+            bandwidth = 1000 / self.resource.bandwidths_sav[u][v]
+            demand_sum = sum([item[2] for item in band_allocate[(u, v)]])
+            for k, i, demand in band_allocate[(u, v)]:
+                time = demand_sum / bandwidth
+                if (k, i) in task_time:
+                    task_time[(k, i)] += time
+                else:
+                    task_time[(k, i)] = time
+        time_delta = 0
+        for (k, i), time in task_time.items():
+            tran_time = time
+            exec_time = self.jobOfStage(k).tasks[i].exec_time
+            time = tran_time + exec_time
+            time_delta = max(time_delta, time)
+            # print(f"{self.jobOfStage(k).tasks[i].task_name}: {time:.2f}={tran_time:.2f}+{exec_time:.2f}")
+
         self.time_point += time_delta
 
 
 if __name__ == '__main__':
     resource = Resource()
+    # resource.showPath(0, 4)
     dags = DAGScheduler(resource)
     task_scheduler = TaskScheduler(dags)
     while task_scheduler.task_pool:
         task_scheduler.schedule()
         task_scheduler.refreshPool()
+    print(f"All job done at {task_scheduler.time_point:.2f}s")
+    print(f"Average job finish time: {sum(task_scheduler.finish_time) / len(task_scheduler.finish_time):.2f}s")
