@@ -2,8 +2,8 @@ def extendLink(link, flag):
 	for k in range(13):
 		for i in range(13):
 			for j in range(13):
-				if link[i][j] > max(link[i][k], link[k][j]):
-					link[i][j] = max(link[i][k], link[k][j])
+				if link[i][j] > 2 * max(link[i][k], link[k][j]):
+					link[i][j] = 2 * max(link[i][k], link[k][j])
 					flag[i][j] = k
 def buildPath(i, j, flag, path):
 	if i == j:

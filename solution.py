@@ -1,3 +1,6 @@
+# -*- coding: utf-8
+# -*- author: Shangyu Liu
+
 from scipy import optimize as opt
 import numpy as np
 import copy
@@ -94,8 +97,8 @@ class Resource:
         for k in range(len(self.datacenters)):
             for i in range(len(self.datacenters)):
                 for j in range(len(self.datacenters)):
-                    if self.bandwidths[i][j] > max(self.bandwidths[i][k], self.bandwidths[k][j]):
-                        self.bandwidths[i][j] = max(self.bandwidths[i][k], self.bandwidths[k][j])
+                    if self.bandwidths[i][j] > 2 * max(self.bandwidths[i][k], self.bandwidths[k][j]):
+                        self.bandwidths[i][j] = 2 * max(self.bandwidths[i][k], self.bandwidths[k][j])
                         self.flag[i][j] = k
     
     def buildPath(self, i, j, path):
@@ -201,6 +204,7 @@ class TaskScheduler:
         self.schedule_pool = []
         self.stages_launch = []
         self.dag_scheduler = dags
+        self.resource = dags.resource
         self.initialPool()
         self.time_point = 0
 
@@ -223,93 +227,82 @@ class TaskScheduler:
                 new_pool.append(stage)
         self.schedule_pool = sorted(new_pool, key=lambda s: max(s.wait, len(self.dag_scheduler.jobs_stages[s.job_ID])), reverse=True)
 
+    def jobOfStage(self, k):
+        return self.dag_scheduler.jobs[self.schedule_pool[k].job_ID]
+
     def printAssign(self, k, i, j):
         print("assign job {}'s task {} to datacenter {}".format(
-            self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].job_name,
-            self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].tasks[i].task_name,
-            self.dag_scheduler.resource.datacenters[j]
+            self.jobOfStage(k).job_name,
+            self.jobOfStage(k).tasks[i].task_name,
+            self.resource.datacenters[j]
         ))
 
     def schedule(self):
         print(f"Start Scheduling at {self.time_point}s")
-        i = 0
-        task_total = 0
-        slot_total = sum(self.dag_scheduler.resource.processors)
-        while i < len(self.schedule_pool) and task_total + len(self.schedule_pool[i].tasks) <= slot_total:
+
+        task_total, slot_total = 0, sum(self.resource.processors)
+        for i in range(len(self.schedule_pool)):
+            if task_total + len(self.schedule_pool[i].tasks) > slot_total: break
             self.stages_launch.append(i)
-            # print(self.schedule_pool[i])
             task_total += len(self.schedule_pool[i].tasks)
-            i += 1
-        J = len(self.dag_scheduler.resource.datacenters)
-        K = len(self.stages_launch)
-        M = J * sum([len(self.schedule_pool[i].tasks) for i in self.stages_launch])
+
+        J, K = len(self.resource.datacenters), len(self.stages_launch)
+        n = lambda k: len(self.schedule_pool[self.stages_launch[k]].tasks)
+        M = J * sum([n(k) for k in range(K)])
         C = lambda k, i, j: max([
-            demand * self.dag_scheduler.resource.bandwidths[self.dag_scheduler.resource.datalocat[database]][j] 
-            for database, demand in self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].dataneed[i] 
+            demand * self.resource.bandwidths[self.resource.datalocat[database]][j] 
+            for database, demand in self.jobOfStage(k).dataneed[i] 
         ])
-        E = lambda k, i, j: self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].tasks[i].exec_time
-        def A(k, i, j): 
-            try: 
-                return M ** (C(k, i, j) + E(k, i, j)) - 1 
-            except OverflowError as e: 
-                return 1e12
-        range_k = len(self.stages_launch)
-        range_i = lambda k: len(self.schedule_pool[self.stages_launch[k]].tasks)
-        range_j = len(self.dag_scheduler.resource.datacenters)
-        function = [A(k, i, j) for k in range(range_k) for i in range(range_i(k)) for j in range(range_j)]
-        upperbound_l = [[int(j ==_j) for k in range(range_k) for i in range(range_i(k)) for j in range(range_j)] for _j in range(range_j)]
-        upperbound_r = [self.dag_scheduler.resource.processors[j] for j in range(range_j)]
-        equality_l = [[int(k ==_k and i ==_i) for k in range(range_k) for i in range(range_i(k)) for j in range(range_j)] for _k in range(range_k) for _i in range(range_i(_k))]
-        equality_r = [1 for k in range(range_k) for i in range(range_i(k))]
-        bounds = [(0, 1) for k in range(range_k) for i in range(range_i(k)) for j in range(range_j)]
+        E = lambda k, i, j: self.jobOfStage(k).tasks[i].exec_time
+        A = lambda k, i, j: M ** (C(k, i, j) + E(k, i, j)) - 1 
+
         time_delta = 0
+
+        function = [[[A(k, i, j) for j in range(J)] for i in range(n(k))] for k in range(K)]
+        upperbound_l = [[[[int(j ==_j) for j in range(J)] for i in range(n(k))] for k in range(K)] for _j in range(J)]
+        upperbound_r = [self.resource.processors[j] for j in range(J)]
+        equality_l = [[[[int(k ==_k and i ==_i) for j in range(J)] for i in range(n(k))] for k in range(K)] for _k in range(K) for _i in range(n(_k))]
+        equality_r = [1 for k in range(K) for i in range(n(k))]
+        bounds = [[[(0, 1) for j in range(J)] for i in range(n(k))] for k in range(K)]
+
+        _flatten = lambda x: [y for _x in x for y in _flatten(_x)] if isinstance(x, list) else [x]
+        _flatten_= lambda x: [_flatten(y) for y in x]
+        
         for _ in range(task_total):
             res = opt.linprog(
-                c=np.array(function), 
-                A_ub=np.array(upperbound_l), 
+                c=np.array(_flatten(function)), 
+                A_ub=np.array(_flatten_(upperbound_l)), 
                 b_ub=np.array(upperbound_r), 
-                A_eq=np.array(equality_l), 
+                A_eq=np.array(_flatten_(equality_l)), 
                 b_eq=np.array(equality_r), 
-                bounds=tuple(bounds),
+                bounds=tuple(_flatten(bounds)),
                 method="simplex"
             )
-            _x, _k, _i, _j, _index = 0, -1, -1, -1, -1
+            _x, _k, _i, _j = 0, -1, -1, -1
             index = 0
-            for k in range(range_k):
-                for i in range(range_i(k)):
-                    for j in range(range_j):
+            for k in range(K):
+                for i in range(n(k)):
+                    for j in range(J):
                         x = res.x[index] * (C(k, i, j) + E(k, i, j))
-                        if x > _x: _x, _k, _i, _j, _index = x, k, i, j, index
+                        if x > _x: _x, _k, _i, _j = x, k, i, j
                         index += 1
+            
             self.printAssign(_k, _i, _j)
+            
             A_k_i_j = A(_k, _i, _j)
+            function[_k] = [[A_k_i_j for j in range(J)]for i in range(n(_k))]
+            function[_k][_i] = [0 for j in range(J)]
+            
+            for j in range(J): upperbound_l[j][_k][_i][_j] = 0
+            upperbound_r[_j] -= 1
+            
+            index_1 = sum([n(k) for k in range(_k)]) + _i
+            equality_l[index_1][_k][_i] = [0 for j in range(J)]
+            equality_r[index_1] = 0
+            
+            bounds[_k][_i] = [(0, 0) for j in range(J)]
             
             time_delta = max(time_delta, _x)
-
-            # revise A^{k*}_{i, j}
-            index_1 = 0
-            for k in range(range_k):
-                if k == _k:
-                    index_1 += _i
-                    break
-                index_1 += range_i(k)
-
-            index = 0
-            for k in range(range_k):
-                for i in range(range_i(k)):
-                    for j in range(range_j):
-                        if k == _k:
-                            function[index] = A_k_i_j
-                            if i == _i:
-                                # remove x^{k*}_{i*,j}
-                                function[index] = 0
-                                for j in range(range_j):
-                                    upperbound_l[j][index] = 0
-                                equality_l[index_1][index] = 0
-                                bounds[index] = (0, 0)
-                        index += 1
-            upperbound_r[_j] -= 1
-            equality_r[index_1] = 0
         self.time_point += time_delta
 
 
