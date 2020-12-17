@@ -5,6 +5,9 @@ from scipy import optimize as opt
 import numpy as np
 import copy
 import sys
+import os
+import random
+import subprocess
 
 FILE_DC_SLOT = "datacenter_slot.dat"
 FILE_DC_DATA = "databases.dat"
@@ -93,12 +96,14 @@ class Resource:
                 dc_1, dc_2, bandwidth = line.strip().split()
                 dc_1, dc_2, bandwidth = self.dcID(dc_1.strip()), self.dcID(dc_2.strip()), float(bandwidth.strip())
                 self.bandwidths[dc_1][dc_2] = 1 / bandwidth
+        self.bandwidths_sav = copy.deepcopy(self.bandwidths)
         self.extendLink()
         for i in range(len(self.datacenters)):
             for j in range(len(self.datacenters)):
                 self.buildPath(i, j, self.path[i][j])
                 self.path[i][j] = self.path[i][j][:-1]
-                print(f"{i}->{j}: {self.path[i][j]}")
+
+        self.showPath(0, 4)
     
     def extendLink(self):
         for k in range(len(self.datacenters)):
@@ -107,6 +112,24 @@ class Resource:
                     if self.bandwidths[i][j] > 2 * max(self.bandwidths[i][k], self.bandwidths[k][j]):
                         self.bandwidths[i][j] = 2 * max(self.bandwidths[i][k], self.bandwidths[k][j])
                         self.flag[i][j] = k
+
+    def showPath(self, i, j):
+        if self.path[i][j]:
+            path = [(i, self.path[i][j][0]), (self.path[i][j][-1], j)]
+            path += [(self.path[i][j][k], self.path[i][j][k + 1]) for k in range(len(self.path[i][j]) - 1)]
+        else:
+            path = [(i, j)]
+        with open("raw_links.dot", "w") as writer:
+            sentences = []
+            for i in range(len(self.datacenters)):
+                for j in range(len(self.datacenters)):
+                    bandwidth = int(1 / self.bandwidths_sav[i][j])
+                    if 0 < bandwidth < 1000:
+                        color = "red" if (i, j) in path else "black"
+                        sentences.append(f'{self.datacenters[i]} -> {self.datacenters[j]} [label="{bandwidth}", color="{color}"]\n')
+            writer.write("digraph G {{{}}}\n".format("".join(sentences)))
+        os.system("dot raw_links.dot -T png -o pic.png")
+        subprocess.call(["open", "pic.png"])
     
     def buildPath(self, i, j, path):
         if i == j:
@@ -139,7 +162,7 @@ class DAGScheduler:
                     task_name, exec_time = task_name.strip(), float(exec_time.strip())
                     job.addTask(Task(task_name, exec_time))
                 self.addJob(job)
-                
+
         with open(FILE_TASK_PRECEDENCE, "r") as reader:
             for line in reader.readlines():
                 job_name, precedences = line.strip().split(':')
