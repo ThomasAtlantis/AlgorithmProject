@@ -75,13 +75,37 @@ class Resource:
                 self.databases.append(database.strip())
                 self.datalocat.append(self.dcID(dataloct.strip()))
         
-        self.bandwidths = [[0 for i in range(len(self.datacenters))] for i in range(len(self.datacenters))]
+        self.bandwidths = [[1e10 for i in range(len(self.datacenters))] for i in range(len(self.datacenters))]
+        self.flag = [[-1 for j in range(len(self.datacenters))] for i in range(len(self.datacenters))]
+        self.path = [[[] for j in range(len(self.datacenters))] for i in range(len(self.datacenters))]
         with open("bandwidth.dat", "r") as reader:
             for line in reader.readlines():
                 dc_1, dc_2, bandwidth = line.strip().split()
                 dc_1, dc_2, bandwidth = self.dcID(dc_1.strip()), self.dcID(dc_2.strip()), float(bandwidth.strip())
-                # self.bandwidths[dc_1][dc_2] = bandwidth
-                self.bandwidths[dc_2][dc_1] = bandwidth
+                self.bandwidths[dc_1][dc_2] = 1 / bandwidth
+        self.extendLink()
+        for i in range(len(self.datacenters)):
+            for j in range(len(self.datacenters)):
+                self.buildPath(i, j, self.path[i][j])
+                self.path[i][j] = self.path[i][j][:-1]
+                print(f"{i}->{j}: {self.path[i][j]}")
+    
+    def extendLink(self):
+        for k in range(len(self.datacenters)):
+            for i in range(len(self.datacenters)):
+                for j in range(len(self.datacenters)):
+                    if self.bandwidths[i][j] > max(self.bandwidths[i][k], self.bandwidths[k][j]):
+                        self.bandwidths[i][j] = max(self.bandwidths[i][k], self.bandwidths[k][j])
+                        self.flag[i][j] = k
+    
+    def buildPath(self, i, j, path):
+        if i == j:
+            return  
+        elif self.flag[i][j] == -1:
+            path.append(j)
+        else:
+            self.buildPath(i, self.flag[i][j], path)
+            self.buildPath(self.flag[i][j], j, path)
 
     def dcID(self, datacenter):
         return self.datacenters.index(datacenter)
@@ -220,8 +244,7 @@ class TaskScheduler:
         K = len(self.stages_launch)
         M = J * sum([len(self.schedule_pool[i].tasks) for i in self.stages_launch])
         C = lambda k, i, j: max([
-            demand / self.dag_scheduler.resource.bandwidths[self.dag_scheduler.resource.datalocat[database]][j] 
-            if self.dag_scheduler.resource.bandwidths[self.dag_scheduler.resource.datalocat[database]][j] > 0 else 1e12
+            demand * self.dag_scheduler.resource.bandwidths[self.dag_scheduler.resource.datalocat[database]][j] 
             for database, demand in self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].dataneed[i] 
         ])
         E = lambda k, i, j: self.dag_scheduler.jobs[self.schedule_pool[k].job_ID].tasks[i].exec_time

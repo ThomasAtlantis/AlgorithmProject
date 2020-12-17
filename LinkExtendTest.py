@@ -28,7 +28,7 @@ if __name__ == '__main__':
 		for line in reader.readlines():
 			dc_1, dc_2, bandwidth = line.strip().split()
 			dc_1, dc_2, bandwidth = int(dc_1.strip()[2:]), int(dc_2.strip()[2:]), int(bandwidth.strip())
-			link[dc_1 - 1][dc_2 - 1] = 1000 / bandwidth
+			link[dc_1 - 1][dc_2 - 1] = 1 / bandwidth
 	testLink(link)
 	extendLink(link, flag)
 	testLink(link)
