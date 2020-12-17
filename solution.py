@@ -6,6 +6,13 @@ import numpy as np
 import copy
 import sys
 
+FILE_DC_SLOT = "datacenter_slot.dat"
+FILE_DC_DATA = "databases.dat"
+FILE_DC_LINK = "bandwidth.dat"
+FILE_TASK_EXEC_TIME = "task_exec_time.dat"
+FILE_TASK_PRECEDENCE = "task_precedence.dat"
+FILE_TASK_DATADEMAND = "task_dataDemand.dat"
+
 class Task:
 
     def __init__(self, task_name, exec_time):
@@ -63,7 +70,7 @@ class Resource:
     def __init__(self):
         self.datacenters = []
         self.processors = []
-        with open("datacenter_slot.dat", "r") as reader:
+        with open(FILE_DC_SLOT, "r") as reader:
             for line in reader.readlines():
                 datacenter, processor = line.strip().split()
                 datacenter, processor = datacenter.strip(), int(processor.strip())
@@ -72,7 +79,7 @@ class Resource:
         
         self.databases = []
         self.datalocat = []
-        with open("databases.dat", "r") as reader:
+        with open(FILE_DC_DATA, "r") as reader:
             for line in reader.readlines():
                 database, dataloct = line.strip().split()
                 self.databases.append(database.strip())
@@ -81,7 +88,7 @@ class Resource:
         self.bandwidths = [[1e10 for i in range(len(self.datacenters))] for i in range(len(self.datacenters))]
         self.flag = [[-1 for j in range(len(self.datacenters))] for i in range(len(self.datacenters))]
         self.path = [[[] for j in range(len(self.datacenters))] for i in range(len(self.datacenters))]
-        with open("bandwidth.dat", "r") as reader:
+        with open(FILE_DC_LINK, "r") as reader:
             for line in reader.readlines():
                 dc_1, dc_2, bandwidth = line.strip().split()
                 dc_1, dc_2, bandwidth = self.dcID(dc_1.strip()), self.dcID(dc_2.strip()), float(bandwidth.strip())
@@ -122,7 +129,7 @@ class DAGScheduler:
         self.resource = resource
         self.jobs = []
         self.jobs_stages = []
-        with open("task_exec_time.dat", "r") as reader:
+        with open(FILE_TASK_EXEC_TIME, "r") as reader:
             for line in reader.readlines():
                 job_name, tasks = line.strip().split(':')
                 job_name, tasks = job_name.strip(), tasks.strip().split(',')
@@ -132,7 +139,8 @@ class DAGScheduler:
                     task_name, exec_time = task_name.strip(), float(exec_time.strip())
                     job.addTask(Task(task_name, exec_time))
                 self.addJob(job)
-        with open("task_precedence.dat", "r") as reader:
+                
+        with open(FILE_TASK_PRECEDENCE, "r") as reader:
             for line in reader.readlines():
                 job_name, precedences = line.strip().split(':')
                 job_name, precedences = job_name.strip(), precedences.strip().split(',')
@@ -141,7 +149,7 @@ class DAGScheduler:
                     task_1, task_2, demand = task_1.strip(), task_2.strip(), float(demand.strip())
                     self.addPrecedence(job_name, task_1, task_2, demand)
 
-        with open("task_dataDemand.dat", "r") as reader:
+        with open(FILE_TASK_DATADEMAND, "r") as reader:
             for line in reader.readlines():
                 job_name, dataDemands = line.strip().split(':')
                 job_name, dataDemands = job_name.strip(), dataDemands.strip().split(',')
@@ -174,10 +182,7 @@ class DAGScheduler:
             parents = copy.copy(job.parents)
             taskres = set(range(len(job.tasks)))
             while True:
-                stage = []
-                for i in taskres:
-                    if not parents[i]:
-                        stage.append(i)
+                stage = [i for i in taskres if not parents[i]]
                 for i in stage:
                     for j in job.children[i]:
                         parents[j] = list(filter(lambda parent: parent[0] != i, parents[j]))
@@ -186,8 +191,7 @@ class DAGScheduler:
                 self.jobs_stages[k].append(Stage(k, len(self.jobs_stages[k]), stage))
 
     def getStage(self, job_ID, stage_ID):
-        if stage_ID >= len(self.jobs_stages[job_ID]):
-            return None
+        if stage_ID >= len(self.jobs_stages[job_ID]): return None
         return self.jobs_stages[job_ID][stage_ID]
 
 
@@ -201,34 +205,34 @@ class DAGScheduler:
 class TaskScheduler:
 
     def __init__(self, dags):
-        self.schedule_pool = []
-        self.stages_launch = []
-        self.dag_scheduler = dags
+        self.dags = dags
         self.resource = dags.resource
-        self.initialPool()
+        self.dags.partition()
+        self.task_pool = self.initialPool()
+        self.to_launch = []
         self.time_point = 0
 
     def initialPool(self):
-        for stages in self.dag_scheduler.jobs_stages:
-            self.schedule_pool.append(stages[0])
+        return [stages[0] for stages in self.dags.jobs_stages]
 
     def refreshPool(self):
         new_pool = []
-        for stage in self.stages_launch:
-            self.schedule_pool[stage].finish = True
-        self.stages_launch.clear()
-        for stage in self.schedule_pool:
+        for stage in self.to_launch: self.task_pool[stage].finish = True
+        self.to_launch.clear()
+        for stage in self.task_pool:
             if stage.finish:
-                stage_next = self.dag_scheduler.getStage(stage.job_ID, stage.stage_ID + 1)
-                if stage_next:
-                    new_pool.append(stage_next)
+                stage_next = self.dags.getStage(stage.job_ID, stage.stage_ID + 1)
+                if stage_next: new_pool.append(stage_next)
             else:
                 stage.wait += 1
                 new_pool.append(stage)
-        self.schedule_pool = sorted(new_pool, key=lambda s: max(s.wait, len(self.dag_scheduler.jobs_stages[s.job_ID])), reverse=True)
+        self.task_pool = sorted(
+            new_pool, reverse=True,
+            key=lambda s: max(s.wait, len(self.dags.jobs_stages[s.job_ID]))
+        )
 
     def jobOfStage(self, k):
-        return self.dag_scheduler.jobs[self.schedule_pool[k].job_ID]
+        return self.dags.jobs[self.task_pool[k].job_ID]
 
     def printAssign(self, k, i, j):
         print("assign job {}'s task {} to datacenter {}".format(
@@ -241,13 +245,13 @@ class TaskScheduler:
         print(f"Start Scheduling at {self.time_point}s")
 
         task_total, slot_total = 0, sum(self.resource.processors)
-        for i in range(len(self.schedule_pool)):
-            if task_total + len(self.schedule_pool[i].tasks) > slot_total: break
-            self.stages_launch.append(i)
-            task_total += len(self.schedule_pool[i].tasks)
+        for i in range(len(self.task_pool)):
+            if task_total + len(self.task_pool[i].tasks) > slot_total: break
+            self.to_launch.append(i)
+            task_total += len(self.task_pool[i].tasks)
 
-        J, K = len(self.resource.datacenters), len(self.stages_launch)
-        n = lambda k: len(self.schedule_pool[self.stages_launch[k]].tasks)
+        J, K = len(self.resource.datacenters), len(self.to_launch)
+        n = lambda k: len(self.task_pool[self.to_launch[k]].tasks)
         M = J * sum([n(k) for k in range(K)])
         C = lambda k, i, j: max([
             demand * self.resource.bandwidths[self.resource.datalocat[database]][j] 
@@ -308,11 +312,8 @@ class TaskScheduler:
 
 if __name__ == '__main__':
     resource = Resource()
-    dag_scheduler = DAGScheduler(resource)
-    dag_scheduler.partition()
-    task_scheduler = TaskScheduler(dag_scheduler)
-    while True:
+    dags = DAGScheduler(resource)
+    task_scheduler = TaskScheduler(dags)
+    while task_scheduler.task_pool:
         task_scheduler.schedule()
         task_scheduler.refreshPool()
-        if not task_scheduler.schedule_pool:
-            break
