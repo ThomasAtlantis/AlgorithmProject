@@ -9,12 +9,14 @@ import os
 import random
 import subprocess
 
-FILE_DC_SLOT = "datacenter_slot.dat"
-FILE_DC_DATA = "databases.dat"
-FILE_DC_LINK = "bandwidth.dat"
-FILE_TASK_EXEC_TIME = "task_exec_time.dat"
-FILE_TASK_PRECEDENCE = "task_precedence.dat"
-FILE_TASK_DATADEMAND = "task_dataDemand.dat"
+# PATH = "./"
+PATH = "data/data1/"
+FILE_DC_SLOT = PATH + "datacenter_slot.dat"
+FILE_DC_DATA = PATH + "databases.dat"
+FILE_DC_LINK = PATH + "bandwidth.dat"
+FILE_TASK_EXEC_TIME = PATH + "task_exec_time.dat"
+FILE_TASK_PRECEDENCE = PATH + "task_precedence.dat"
+FILE_TASK_DATADEMAND = PATH + "task_dataDemand.dat"
 
 class Task:
 
@@ -111,6 +113,15 @@ class Resource:
                         self.bandwidths[i][j] = 2 * max(self.bandwidths[i][k], self.bandwidths[k][j])
                         self.flag[i][j] = k
 
+    def tidyPath(self, i, j):
+        _path = self.path[i][_j]
+        if _path:
+            path = [(i, _path[0]), (_path[-1], _j)]
+            path += [(_path[p], _path[p + 1]) for p in range(len(_path) - 1)]
+        else:
+            path = [(i, _j)]
+        return path
+
     def showPath(self, i, j):
         if self.path[i][j]:
             path = [(i, self.path[i][j][0]), (self.path[i][j][-1], j)]
@@ -167,6 +178,7 @@ class DAGScheduler:
                 job_name, tasks = job_name.strip(), tasks.strip().split(',')
                 job = Job(job_name)
                 for task in tasks:
+                    if not task.strip(): continue
                     task_name, exec_time = task.strip().split(' ')
                     task_name, exec_time = task_name.strip(), float(exec_time.strip())
                     job.addTask(Task(task_name, exec_time))
@@ -177,6 +189,7 @@ class DAGScheduler:
                 job_name, precedences = line.strip().split(':')
                 job_name, precedences = job_name.strip(), precedences.strip().split(',')
                 for precedence in precedences:
+                    if not precedence.strip(): continue
                     task_1, task_2, demand = precedence.strip().split()
                     task_1, task_2, demand = task_1.strip(), task_2.strip(), float(demand.strip())
                     self.addPrecedence(job_name, task_1, task_2, demand)
@@ -185,8 +198,9 @@ class DAGScheduler:
             for line in reader.readlines():
                 job_name, dataDemands = line.strip().split(':')
                 job_name, dataDemands = job_name.strip(), dataDemands.strip().split(',')
-                for precedence in dataDemands:
-                    task, database, demand = precedence.strip().split()
+                for dataDemand in dataDemands:
+                    if not dataDemand.strip(): continue
+                    task, database, demand = dataDemand.strip().split()
                     task, database, demand = task.strip(), database.strip(), float(demand.strip())
                     self.addDataDemand(job_name, task, database, demand)
 
@@ -244,6 +258,7 @@ class TaskScheduler:
         self.to_launch = []
         self.time_point = 0
         self.finish_time = []
+        self.solutions = {}
 
     def initialPool(self):
         return [stages[0] for stages in self.dags.jobs_stages]
@@ -292,12 +307,14 @@ class TaskScheduler:
             self.to_launch.append(i)
             task_total += len(self.task_pool[i].tasks)
 
-        # for k in self.to_launch:
-        #     print("{}-{}: {}".format(
-        #         self.jobOfStage(k).job_name,
-        #         self.task_pool[k].stage_ID,
-        #         ', '.join([self.jobOfStage(k).tasks[task_ID].task_name for task_ID in self.task_pool[k].tasks])
-        #     ))
+        assert self.to_launch
+
+        for k in self.to_launch:
+            print("{}-{}: {}".format(
+                self.jobOfStage(k).job_name,
+                self.task_pool[k].stage_ID,
+                ', '.join([self.jobOfStage(k).tasks[task_ID].task_name for task_ID in self.task_pool[k].tasks])
+            ))
 
         J, K = len(self.resource.datacenters), len(self.to_launch)
         n = lambda k: len(self.task_pool[self.to_launch[k]].tasks)
@@ -321,6 +338,8 @@ class TaskScheduler:
         
         band_allocate = {}
 
+        # print(upperbound_l)
+
         for _ in range(task_total):
             res = opt.linprog(
                 c=np.array(_flatten(function)), 
@@ -340,7 +359,8 @@ class TaskScheduler:
                         if x > _x: _x, _k, _i, _j = x, k, i, j
                         index += 1
             
-            # self.showAssign(_k, _i, _j)
+            self.showAssign(_k, _i, _j)
+            self.solutions[(_k, _i)] = _j
             
             A_k_i_j = A(_k, _i, _j)
             function[_k] = [[A_k_i_j for j in range(J)]for i in range(n(_k))]
@@ -365,34 +385,45 @@ class TaskScheduler:
                     path = [(dc_ID, _j)]
                 for p in path:
                     if p in band_allocate:
-                        band_allocate[p].append((_k, _i, demand))
+                        band_allocate[p].append((_k, _i, dc_ID, demand))
                     else:
-                        band_allocate[p] = [(_k, _i, demand)]
+                        band_allocate[p] = [(_k, _i, dc_ID, demand)]
 
         task_time = {}
         for u, v in band_allocate.keys():
             bandwidth = 1000 / self.resource.bandwidths_sav[u][v]
-            demand_sum = sum([item[2] for item in band_allocate[(u, v)]])
-            for k, i, demand in band_allocate[(u, v)]:
+            demand_sum = sum([item[3] for item in band_allocate[(u, v)]])
+            for k, i, dc_ID, demand in band_allocate[(u, v)]:
                 time = demand_sum / bandwidth
+                print('{}, {} -> {}: {}, {}, {}, {}, {}'.format(
+                    self.jobOfStage(k).tasks[i].task_name,
+                    self.resource.datacenters[dc_ID],
+                    self.resource.datacenters[self.solutions[(k, i)]],
+                    (u, v), demand, demand_sum, bandwidth, time
+                ))
                 if (k, i) in task_time:
-                    task_time[(k, i)] += time
+                    if dc_ID in task_time[(k, i)]:
+                        task_time[(k, i)][dc_ID] += time
+                    else:
+                        task_time[(k, i)][dc_ID] = time
                 else:
-                    task_time[(k, i)] = time
+                    task_time[(k, i)] = {dc_ID: time}
+
         time_delta = 0
-        for (k, i), time in task_time.items():
-            tran_time = time
+        for (k, i), times in task_time.items():
+            print((k, i), times)
+            tran_time = max(times.values())
             exec_time = self.jobOfStage(k).tasks[i].exec_time
-            time = tran_time + exec_time
-            time_delta = max(time_delta, time)
-            # print(f"{self.jobOfStage(k).tasks[i].task_name}: {time:.2f}={tran_time:.2f}+{exec_time:.2f}")
+            time_final = tran_time + exec_time
+            time_delta = max(time_delta, time_final)
+            print(f"{self.jobOfStage(k).tasks[i].task_name}: {time_final:.2f}={tran_time:.2f}+{exec_time:.2f}")
 
         self.time_point += time_delta
 
 
 if __name__ == '__main__':
     resource = Resource()
-    # resource.showPath(0, 4)
+    # resource.showPath(3, 2)
     dags = DAGScheduler(resource)
     task_scheduler = TaskScheduler(dags)
     while task_scheduler.task_pool:
